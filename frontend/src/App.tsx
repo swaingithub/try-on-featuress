@@ -36,6 +36,7 @@ function App() {
   const [selectedSize, setSelectedSize] = useState('768x1344');
   const [error, setError] = useState<string | null>(null);
   const [combinedDescription, setCombinedDescription] = useState<string | null>(null);
+  const [serverStatus, setServerStatus] = useState<'online' | 'offline' | 'checking'>('checking');
 
   useEffect(() => {
     if (error) {
@@ -43,6 +44,19 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [error]);
+
+  useEffect(() => {
+    const checkServer = async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/`);
+        if (resp.ok) setServerStatus('online');
+        else setServerStatus('offline');
+      } catch {
+        setServerStatus('offline');
+      }
+    };
+    checkServer();
+  }, []);
 
   const handleUserFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -128,7 +142,13 @@ function App() {
     <div className="app-wrapper">
       <div className="container">
         <header className="header">
-          <span className="badge">Next-Gen Generative Fashion</span>
+          <div className="status-bar">
+            <span className="badge">Next-Gen Generative Fashion</span>
+            <div className={`server-indicator ${serverStatus}`}>
+              <span className="dot"></span>
+              {serverStatus === 'checking' ? 'Checking API...' : serverStatus === 'online' ? 'API Online' : 'API Offline'}
+            </div>
+          </div>
           <h1>Virtual <br /> Fashion Studio</h1>
           <p className="subtitle">
             Experience our dual-stage AI pipeline. Analyze your build, Manifest any outfit.

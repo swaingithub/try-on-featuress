@@ -30,6 +30,44 @@ body {
   margin-bottom: 60px;
 }
 
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.server-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #888;
+  padding: 4px 12px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 100px;
+  border: 1px solid var(--border);
+}
+
+.server-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff4757;
+}
+
+.server-indicator.online .dot {
+  background: #2ed573;
+  box-shadow: 0 0 10px #2ed573;
+}
+
+.server-indicator.checking .dot {
+  background: #ffa502;
+  animation: pulse 1s infinite;
+}
+
 .badge {
   background: rgba(138, 43, 226, 0.2);
   color: #c48cff;
