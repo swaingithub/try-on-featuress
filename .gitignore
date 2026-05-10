@@ -1,0 +1,20 @@
+# API Keys and Config
+.env
+.z-ai-config
+.vercel
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Local Uploads and Temporary Files
+uploads/
+/tmp/
+
+# Build Outputs
+frontend/dist/
+dist/
+
+# System Files
+.DS_Store
+Thumbs.db
