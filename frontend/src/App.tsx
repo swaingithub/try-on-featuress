@@ -35,9 +35,6 @@ function App() {
   const [prompt, setPrompt] = useState('');
   const [selectedSize, setSelectedSize] = useState('768x1344');
   const [error, setError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [userDescription, setUserDescription] = useState<string | null>(null);
-  const [productDescription, setProductDescription] = useState<string | null>(null);
   const [combinedDescription, setCombinedDescription] = useState<string | null>(null);
 
   useEffect(() => {
@@ -82,7 +79,6 @@ function App() {
 
     setLoading(true);
     setError(null);
-    setStatusMessage('📤 Initializing AI Fusion...');
 
     try {
       const formData = new FormData();
@@ -106,17 +102,12 @@ function App() {
       const data = await response.json();
       if (data.success) {
         setTryOnResult(data.resultImage);
-        setUserDescription(data.userDescription || null);
-        setProductDescription(data.productDescription || null);
         setCombinedDescription(data.combinedDescription || null);
-        setStatusMessage(null);
       } else {
         setError(data.error || data.details || 'The AI encountered an issue.');
-        setStatusMessage(null);
       }
     } catch (err: any) {
       setError('Connection failed. Backend may be offline.');
-      setStatusMessage(null);
     } finally {
       setLoading(false);
     }
@@ -130,10 +121,7 @@ function App() {
     setTryOnResult(null);
     setPrompt('');
     setError(null);
-    setUserDescription(null);
-    setProductDescription(null);
     setCombinedDescription(null);
-    setStatusMessage(null);
   };
 
   return (
