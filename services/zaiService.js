@@ -53,11 +53,15 @@ async function getZAI() {
   const config = getConfig();
 
   // Ensure a config file exists somewhere the SDK can find it.
-  const cwdConfig = path.join(process.cwd(), '.z-ai-config');
-  if (!fs.existsSync(cwdConfig)) {
+  const isVercel = process.env.VERCEL === '1';
+  const configPath = isVercel 
+    ? path.join('/tmp', '.z-ai-config') 
+    : path.join(process.cwd(), '.z-ai-config');
+
+  if (!fs.existsSync(configPath)) {
     try {
-      fs.writeFileSync(cwdConfig, JSON.stringify(config, null, 2), 'utf-8');
-      console.log('[zaiService] Wrote temp .z-ai-config to cwd');
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      console.log(`[zaiService] Wrote temp config to ${configPath}`);
     } catch (err) {
       console.warn('[zaiService] Could not write temp config:', err.message);
     }

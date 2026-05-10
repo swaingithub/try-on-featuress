@@ -14,7 +14,11 @@ const router = Router();
 // Multer config
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(process.cwd(), 'uploads', 'temp');
+    const isVercel = process.env.VERCEL === '1';
+    const uploadDir = isVercel 
+      ? path.join('/tmp', 'uploads') 
+      : path.join(process.cwd(), 'uploads', 'temp');
+    
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }

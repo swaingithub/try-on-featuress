@@ -20,7 +20,11 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Static files for results
-const resultsDir = path.join(process.cwd(), 'uploads', 'results');
+const isVercel = process.env.VERCEL === '1';
+const resultsDir = isVercel 
+  ? path.join('/tmp', 'results') 
+  : path.join(process.cwd(), 'uploads', 'results');
+
 if (!fs.existsSync(resultsDir)) {
     fs.mkdirSync(resultsDir, { recursive: true });
 }
@@ -33,6 +37,10 @@ app.get('/', (req, res) => {
     res.send('🧥 Try-On Backend is running...');
 });
 
-app.listen(PORT, () => {
-    console.log(`🧥 Try-On Backend running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`🧥 Try-On Backend running on http://localhost:${PORT}`);
+    });
+}
+
+export default app;

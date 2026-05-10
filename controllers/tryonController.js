@@ -11,7 +11,11 @@ import fs from 'fs';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getOutputDir() {
-  const dir = path.join(process.cwd(), 'uploads', 'results');
+  const isVercel = process.env.VERCEL === '1';
+  const dir = isVercel 
+    ? path.join('/tmp', 'results') 
+    : path.join(process.cwd(), 'uploads', 'results');
+
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
