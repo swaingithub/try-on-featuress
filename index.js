@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import tryonRoutes from './routes/tryon.js';
-import chatRoutes from './routes/chat.js';
+import chatRoutes from './routes/chatRoutes.js';
 
 dotenv.config();
 

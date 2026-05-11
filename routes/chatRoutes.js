@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import fs from 'fs';
+import path from 'path';
 import {
   handleChat,
   handleProductAnalysis,
@@ -13,9 +14,13 @@ const router = Router();
 // Multer for product image upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = 'uploads/';
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
+    const isVercel = process.env.VERCEL === '1';
+    const uploadDir = isVercel 
+      ? path.join('/tmp', 'uploads') 
+      : path.join(process.cwd(), 'uploads', 'chat');
+    
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     cb(null, `chat-${Date.now()}-${file.originalname}`);
