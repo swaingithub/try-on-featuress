@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import tryonRoutes from './routes/tryon.js';
+import chatRoutes from './routes/chat.js';
 
 dotenv.config();
 
@@ -32,6 +33,7 @@ app.use('/results', express.static(resultsDir));
 
 // Routes
 app.use('/api', tryonRoutes);
+app.use('/api', chatRoutes);
 
 app.get('/', (req, res) => {
     res.send('🧥 Try-On Backend is running...');
