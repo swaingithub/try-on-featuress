@@ -49,7 +49,7 @@ export async function handleChat(req, res) {
     res.json({
       success: true,
       reply,
-      model: 'glm-4-flash',
+      model: 'gemini-1.5-flash',
     });
   } catch (error) {
     console.error('[chatController] Chat error:', error);
@@ -89,7 +89,7 @@ export async function handleProductAnalysis(req, res) {
     res.json({
       success: true,
       analysis,
-      model: 'glm-4.6v-flash',
+      model: 'gemini-1.5-flash',
     });
   } catch (error) {
     console.error('[chatController] Product analysis error:', error);
@@ -124,7 +124,7 @@ export async function handleProductSearch(req, res) {
     res.json({
       success: true,
       results,
-      model: 'glm-4-flash',
+      model: 'gemini-1.5-flash',
     });
   } catch (error) {
     console.error('[chatController] Search error:', error);
@@ -161,7 +161,7 @@ export async function handleOutfitRecommendation(req, res) {
     res.json({
       success: true,
       recommendation,
-      model: 'glm-4-flash',
+      model: 'gemini-1.5-flash',
     });
   } catch (error) {
     console.error('[chatController] Outfit recommendation error:', error);
