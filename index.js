@@ -26,13 +26,8 @@ const resultsDir = isVercel
   ? path.join('/tmp', 'results') 
   : path.join(process.cwd(), 'uploads', 'results');
 
-try {
-    if (!fs.existsSync(resultsDir)) {
-        fs.mkdirSync(resultsDir, { recursive: true });
-        console.log(`[backend] Created results directory: ${resultsDir}`);
-    }
-} catch (err) {
-    console.error(`[backend] Failed to create results directory: ${err.message}`);
+if (!fs.existsSync(resultsDir)) {
+    fs.mkdirSync(resultsDir, { recursive: true });
 }
 app.use('/results', express.static(resultsDir));
 

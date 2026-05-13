@@ -1,17 +1,120 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import dotenv from 'dotenv';
+import ZAI from 'z-ai-web-dev-sdk';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
-dotenv.config();
+// ─── State ────────────────────────────────────────────────────────────────────
+
+let zaiInstance = null;
+let zaiConfig = null;
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+function getConfig() {
+  if (zaiConfig) return zaiConfig;
 
-if (!GEMINI_API_KEY) {
-  console.warn('[chatService] GEMINI_API_KEY not found in environment variables.');
+  if (process.env.ZAI_BASE_URL && process.env.ZAI_API_KEY) {
+    zaiConfig = {
+      baseUrl: process.env.ZAI_BASE_URL,
+      apiKey: process.env.ZAI_API_KEY,
+    };
+    return zaiConfig;
+  }
+
+  const configPaths = [
+    path.join(process.cwd(), '.z-ai-config'),
+    path.join(os.homedir(), '.z-ai-config'),
+    '/etc/.z-ai-config',
+  ];
+
+  for (const p of configPaths) {
+    try {
+      if (fs.existsSync(p)) {
+        zaiConfig = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return zaiConfig;
+      }
+    } catch (_) {}
+  }
+
+  throw new Error('Configuration not found. Set ZAI_BASE_URL + ZAI_API_KEY env vars, or create .z-ai-config file.');
 }
 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// ─── ZAI Instance ─────────────────────────────────────────────────────────────
+
+async function getZAI() {
+  if (zaiInstance) return zaiInstance;
+
+  const config = getConfig();
+  const cwdConfig = path.join(process.cwd(), '.z-ai-config');
+  if (!fs.existsSync(cwdConfig)) {
+    try {
+      fs.writeFileSync(cwdConfig, JSON.stringify(config, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn('[chatService] Could not write temp config:', err.message);
+    }
+  }
+
+  try {
+    zaiInstance = await ZAI.create();
+    return zaiInstance;
+  } catch (sdkErr) {
+    console.warn('[chatService] ZAI.create() failed:', sdkErr.message);
+    return null;
+  }
+}
+
+// ─── Raw Fetch Helper ─────────────────────────────────────────────────────────
+
+async function rawFetch(endpoint, body) {
+  const config = getConfig();
+  const url = `${config.baseUrl}${endpoint}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`BigModel API ${response.status}: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+// ─── Retry Utility ────────────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 2000) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const isRateLimit =
+        error.message &&
+        (error.message.includes('1305') ||
+          error.message.includes('访问量过大') ||
+          error.message.includes('429') ||
+          error.message.includes('rate'));
+
+      if (isRateLimit && attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`⏳ Rate limited. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${maxRetries})`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
 
 // ─── E-Commerce System Prompt ─────────────────────────────────────────────────
 
@@ -49,76 +152,61 @@ const ECOMMERCE_SYSTEM_PROMPT = `You are an expert AI e-commerce shopping assist
 
 Keep responses concise but helpful. Be friendly, enthusiastic, and fashion-savvy.`;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Maps standard role names to Gemini role names
- */
-function mapRole(role) {
-  if (role === 'assistant') return 'model';
-  return 'user';
-}
-
-/**
- * Converts messages to Gemini chat history format
- */
-function convertToGeminiHistory(messages) {
-  // Gemini expects history to NOT include the current message
-  // and roles to be 'user' and 'model'
-  const history = messages.slice(0, -1).map(msg => ({
-    role: mapRole(msg.role),
-    parts: [{ text: msg.content }],
-  }));
-  
-  const lastMessage = messages[messages.length - 1].content;
-  
-  return { history, lastMessage };
-}
-
 // ─── Chat Functions ───────────────────────────────────────────────────────────
 
 /**
- * Text-based e-commerce chat (Gemini 1.5 Flash)
+ * Text-based e-commerce chat (FREE — glm-4-flash)
  * Handles product search, filtering, recommendations, Q&A
  */
 export async function chatECommerce(messages, productContext = null) {
-  try {
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-flash",
-      systemInstruction: productContext 
-        ? `${ECOMMERCE_SYSTEM_PROMPT}\n\n📋 CURRENT STORE CONTEXT:\n${productContext}`
-        : ECOMMERCE_SYSTEM_PROMPT,
-    });
+  const systemMessage = {
+    role: 'system',
+    content: productContext
+      ? `${ECOMMERCE_SYSTEM_PROMPT}\n\n📋 CURRENT STORE CONTEXT:\n${productContext}`
+      : ECOMMERCE_SYSTEM_PROMPT,
+  };
 
-    const { history, lastMessage } = convertToGeminiHistory(messages);
+  const allMessages = [systemMessage, ...messages];
 
-    const chat = model.startChat({
-      history: history,
-      generationConfig: {
-        maxOutputTokens: 2048,
-        temperature: 0.8,
-      },
-    });
+  const zai = await getZAI();
 
-    const result = await chat.sendMessage(lastMessage);
-    const response = await result.response;
-    return response.text();
-  } catch (error) {
-    console.error('[chatService] Gemini chat failed:', error);
-    throw error;
+  // Try SDK first
+  if (zai) {
+    try {
+      const result = await retryWithBackoff(async () => {
+        const response = await zai.chat.completions.create({
+          model: 'glm-4-flash', // FREE text model
+          messages: allMessages,
+          max_tokens: 2048,
+          temperature: 0.8,
+        });
+        return response.choices[0].message.content;
+      }, 3, 2000);
+      return result;
+    } catch (sdkErr) {
+      console.warn('[chatService] SDK chat failed, trying raw fetch:', sdkErr.message);
+    }
   }
+
+  // Fallback: raw fetch
+  return retryWithBackoff(async () => {
+    const result = await rawFetch('/chat/completions', {
+      model: 'glm-4-flash',
+      messages: allMessages,
+      max_tokens: 2048,
+      temperature: 0.8,
+    });
+    return result.choices?.[0]?.message?.content || '';
+  }, 3, 2000);
 }
 
 /**
- * Analyze a product image with e-commerce context (Gemini 1.5 Flash)
+ * Analyze a product image with e-commerce context (FREE — glm-4.6v-flash)
  * Identifies product type, style, price estimate, similar items
  */
 export async function analyzeProductChat(imageBase64, userQuestion = null) {
-  try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    const prompt = userQuestion
-      ? `Analyze this product image and answer the user's question.
+  const prompt = userQuestion
+    ? `Analyze this product image and answer the user's question.
 
 User's question: ${userQuestion}
 
@@ -132,7 +220,7 @@ Provide a detailed analysis including:
 7. Size/fit recommendations
 
 Be specific and helpful for shopping decisions.`
-      : `Analyze this product image for an e-commerce shopping assistant:
+    : `Analyze this product image for an e-commerce shopping assistant:
 
 1. What is this product? (type, category, subcategory)
 2. Key features and design details
@@ -145,34 +233,50 @@ Be specific and helpful for shopping decisions.`
 
 Be detailed and specific for shopping recommendations.`;
 
-    // Extract base64 data and mime type
-    // Expected format: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
-    const match = imageBase64.match(/^data:(image\/\w+);base64,(.+)$/);
-    if (!match) {
-      throw new Error('Invalid image format. Expected data URL with base64 data.');
+  const zai = await getZAI();
+
+  const visionMessages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: imageBase64 } },
+      ],
+    },
+  ];
+
+  // Try SDK first
+  if (zai) {
+    try {
+      const result = await retryWithBackoff(async () => {
+        const response = await zai.chat.completions.create({
+          model: 'glm-4.6v-flash', // FREE vision model
+          messages: visionMessages,
+          max_tokens: 1500,
+          temperature: 0.7,
+        });
+        return response.choices[0].message.content;
+      }, 3, 3000);
+      return result;
+    } catch (sdkErr) {
+      console.warn('[chatService] SDK vision failed, trying raw fetch:', sdkErr.message);
     }
-
-    const mimeType = match[1];
-    const data = match[2];
-
-    const imagePart = {
-      inlineData: {
-        data: data,
-        mimeType: mimeType
-      },
-    };
-
-    const result = await model.generateContent([prompt, imagePart]);
-    const response = await result.response;
-    return response.text();
-  } catch (error) {
-    console.error('[chatService] Gemini vision failed:', error);
-    throw error;
   }
+
+  // Fallback: raw fetch
+  return retryWithBackoff(async () => {
+    const result = await rawFetch('/chat/completions', {
+      model: 'glm-4.6v-flash',
+      messages: visionMessages,
+      max_tokens: 1500,
+      temperature: 0.7,
+    });
+    return result.choices?.[0]?.message?.content || '';
+  }, 3, 3000);
 }
 
 /**
- * Search/filter products by text description (Gemini 1.5 Flash)
+ * Search/filter products by text description (FREE — glm-4-flash)
  * Returns structured product suggestions
  */
 export async function searchProducts(query, filters = {}) {
@@ -203,7 +307,7 @@ Format as a clear, organized list.`,
 }
 
 /**
- * Get outfit recommendations based on occasion (Gemini 1.5 Flash)
+ * Get outfit recommendations based on occasion (FREE — glm-4-flash)
  */
 export async function getOutfitRecommendation(occasion, budget = null, style = null) {
   const messages = [
@@ -224,4 +328,3 @@ Include:
 
   return await chatECommerce(messages);
 }
-
