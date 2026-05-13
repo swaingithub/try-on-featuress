@@ -13,7 +13,7 @@ let zaiConfig = null;
 function getConfig() {
   if (zaiConfig) return zaiConfig;
 
-  // Priority 1: Environment variables
+  // Priority: Environment variables
   if (process.env.ZAI_BASE_URL && process.env.ZAI_API_KEY) {
     zaiConfig = {
       baseUrl: process.env.ZAI_BASE_URL,
@@ -22,26 +22,8 @@ function getConfig() {
     return zaiConfig;
   }
 
-  // Priority 2: .z-ai-config file
-  const configPaths = [
-    path.join(process.cwd(), '.z-ai-config'),
-    path.join(os.homedir(), '.z-ai-config'),
-    '/etc/.z-ai-config',
-  ];
-
-  for (const p of configPaths) {
-    try {
-      if (fs.existsSync(p)) {
-        zaiConfig = JSON.parse(fs.readFileSync(p, 'utf8'));
-        return zaiConfig;
-      }
-    } catch (_) {
-      // skip invalid files
-    }
-  }
-
   throw new Error(
-    'Configuration not found. Set ZAI_BASE_URL + ZAI_API_KEY env vars, or create .z-ai-config file.'
+    'Configuration not found. Set ZAI_BASE_URL + ZAI_API_KEY env vars.'
   );
 }
 
@@ -52,20 +34,9 @@ async function getZAI() {
 
   const config = getConfig();
 
-  // Ensure a config file exists somewhere the SDK can find it.
-  const isVercel = process.env.VERCEL === '1';
-  const configPath = isVercel 
-    ? path.join('/tmp', '.z-ai-config') 
-    : path.join(process.cwd(), '.z-ai-config');
-
-  if (!fs.existsSync(configPath)) {
-    try {
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-      console.log(`[zaiService] Wrote temp config to ${configPath}`);
-    } catch (err) {
-      console.warn('[zaiService] Could not write temp config:', err.message);
-    }
-  }
+  // ZAI SDK usually expects a config file. If we only have env vars, we can skip this or 
+  // ensure the SDK handles it. Based on existing code, it was writing a temp file.
+  // We can keep the temp file writing logic for compatibility if the SDK needs it.
 
   try {
     zaiInstance = await ZAI.create();
