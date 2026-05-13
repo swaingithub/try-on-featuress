@@ -21,7 +21,22 @@ function getConfig() {
     return zaiConfig;
   }
 
-  throw new Error('Configuration not found. Set ZAI_BASE_URL + ZAI_API_KEY env vars.');
+  const configPaths = [
+    path.join(process.cwd(), '.z-ai-config'),
+    path.join(os.homedir(), '.z-ai-config'),
+    '/etc/.z-ai-config',
+  ];
+
+  for (const p of configPaths) {
+    try {
+      if (fs.existsSync(p)) {
+        zaiConfig = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return zaiConfig;
+      }
+    } catch (_) {}
+  }
+
+  throw new Error('Configuration not found. Set ZAI_BASE_URL + ZAI_API_KEY env vars, or create .z-ai-config file.');
 }
 
 // ─── ZAI Instance ─────────────────────────────────────────────────────────────
