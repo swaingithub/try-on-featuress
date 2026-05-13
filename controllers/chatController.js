@@ -54,8 +54,10 @@ export async function handleChat(req, res) {
   } catch (error) {
     console.error('[chatController] Chat error:', error);
     res.status(500).json({
+      success: false,
       error: 'Chat failed',
       details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 }
