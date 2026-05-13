@@ -1,3 +1,4 @@
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import ZAI from 'z-ai-web-dev-sdk';
 import fs from 'fs';
 import path from 'path';
@@ -5,10 +6,19 @@ import os from 'os';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
+let genAI = null;
 let zaiInstance = null;
 let zaiConfig = null;
 
 // ─── Configuration ────────────────────────────────────────────────────────────
+
+function getGemini() {
+  if (genAI) return genAI;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  genAI = new GoogleGenerativeAI(apiKey);
+  return genAI;
+}
 
 function getConfig() {
   if (zaiConfig) return zaiConfig;
@@ -77,9 +87,9 @@ async function getZAI() {
   }
 }
 
-// ─── Raw Fetch Helper ─────────────────────────────────────────────────────────
+// ─── Raw Fetch Helper (ZAI) ───────────────────────────────────────────────────
 
-async function rawFetch(endpoint, body) {
+async function rawFetchZAI(endpoint, body) {
   const config = getConfig();
   const url = `${config.baseUrl}${endpoint}`;
 
@@ -111,17 +121,16 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 3000) {
       return await fn();
     } catch (error) {
       lastError = error;
-      const isRateLimit =
-        error.message && (
-          error.message.includes('1305') ||
-          error.message.includes('访问量过大') ||
-          error.message.includes('429') ||
-          error.message.includes('rate')
-        );
+      const isRetryable = error.message && (
+        error.message.includes('429') || 
+        error.message.includes('503') || 
+        error.message.includes('quota') ||
+        error.message.includes('rate')
+      );
 
-      if (isRateLimit && attempt < maxRetries) {
+      if (isRetryable && attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`⏳ Traffic overload. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${maxRetries})`);
+        console.log(`⏳ Busy. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${maxRetries})`);
         await sleep(delay);
         continue;
       }
@@ -133,12 +142,29 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 3000) {
 
 // ─── Vision: Analyze Images ───────────────────────────────────────────────────
 
-async function analyzeImageWithVision(messages, maxTokens = 1024) {
+async function analyzeWithGemini(prompt, imagesBase64, maxTokens = 1024) {
+  const gemini = getGemini();
+  if (!gemini) throw new Error('Gemini not configured');
+
+  const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+  const imageParts = imagesBase64.map(b64 => {
+    const data = b64.includes(',') ? b64.split(',')[1] : b64;
+    return { inlineData: { data, mimeType: 'image/png' } };
+  });
+
+  return await retryWithBackoff(async () => {
+    const result = await model.generateContent([prompt, ...imageParts]);
+    return result.response.text();
+  });
+}
+
+async function analyzeWithZAI(messages, maxTokens = 1024) {
   const zai = await getZAI();
 
   if (zai) {
     try {
-      const result = await retryWithBackoff(async () => {
+      return await retryWithBackoff(async () => {
         const response = await zai.chat.completions.create({
           model: 'glm-4.6v-flash',
           messages,
@@ -146,65 +172,56 @@ async function analyzeImageWithVision(messages, maxTokens = 1024) {
           temperature: 0.7,
         });
         return response.choices[0].message.content;
-      }, 3, 3000);
-      return result;
+      });
     } catch (sdkErr) {
-      console.warn('[zaiService] SDK vision call failed, trying raw fetch:', sdkErr.message);
+      console.warn('[zaiService] ZAI SDK Vision failed, trying raw fetch:', sdkErr.message);
     }
   }
 
-  return retryWithBackoff(async () => {
-    const result = await rawFetch('/chat/completions', {
+  return await retryWithBackoff(async () => {
+    const result = await rawFetchZAI('/chat/completions', {
       model: 'glm-4.6v-flash',
       messages,
       max_tokens: maxTokens,
       temperature: 0.7,
     });
     return result.choices?.[0]?.message?.content || '';
-  }, 3, 3000);
+  });
 }
 
-async function analyzeUserPhoto(imageBase64) {
-  console.log('📸 Analyzing user photo (glm-4.6v-flash)...');
-  try {
-    const result = await analyzeImageWithVision([
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `Describe this person's appearance in detail for a virtual try-on. Include:
+export async function analyzeUserPhoto(imageBase64) {
+  const prompt = `Describe this person's appearance in detail for a virtual try-on. Include:
 1. Body type and build (slim, average, athletic, curvy, etc.)
 2. Height estimate based on proportions
 3. Skin tone (fair, medium, olive, dark, etc.)
 4. Current pose and posture (standing, sitting, facing direction)
 5. Hair style and color
 6. Any visible accessories or clothing style
-Be specific and descriptive. Output ONLY the description.`,
-          },
-          {
-            type: 'image_url',
-            image_url: { url: imageBase64 },
-          },
-        ],
-      },
-    ]);
-    return result;
-  } catch (error) {
-    return null;
+Be specific and descriptive. Output ONLY the description.`;
+
+  // Try Gemini
+  try {
+    console.log('📸 Analyzing user photo (Gemini)...');
+    return await analyzeWithGemini(prompt, [imageBase64]);
+  } catch (err) {
+    console.warn('[zaiService] Gemini user analysis failed, trying ZAI:', err.message);
   }
+
+  // Fallback ZAI
+  const zaiMessages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: imageBase64 } },
+      ],
+    },
+  ];
+  return await analyzeWithZAI(zaiMessages);
 }
 
-async function analyzeProductImage(imageBase64) {
-  console.log('👗 Analyzing product image (glm-4.6v-flash)...');
-  try {
-    const result = await analyzeImageWithVision([
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `Analyze this clothing/fashion product image in detail for virtual try-on:
+export async function analyzeProductImage(imageBase64) {
+  const prompt = `Analyze this clothing/fashion product image in detail for virtual try-on:
 1. Type of garment (dress, shirt, jacket, pants, etc.)
 2. Color and pattern (solid, striped, floral, etc.)
 3. Fabric type and texture (silk, cotton, denim, leather, etc.)
@@ -213,32 +230,31 @@ async function analyzeProductImage(imageBase64) {
 6. Notable design details (buttons, zippers, embroidery, pockets, etc.)
 7. Style category (casual, formal, streetwear, ethnic, sportswear, etc.)
 8. Season suitability (summer, winter, all-season)
-Be specific so the try-on image looks accurate. Output ONLY the description.`,
-          },
-          {
-            type: 'image_url',
-            image_url: { url: imageBase64 },
-          },
-        ],
-      },
-    ]);
-    return result;
-  } catch (error) {
-    return null;
+Be specific so the try-on image looks accurate. Output ONLY the description.`;
+
+  // Try Gemini
+  try {
+    console.log('👗 Analyzing product image (Gemini)...');
+    return await analyzeWithGemini(prompt, [imageBase64]);
+  } catch (err) {
+    console.warn('[zaiService] Gemini product analysis failed, trying ZAI:', err.message);
   }
+
+  // Fallback ZAI
+  const zaiMessages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: imageBase64 } },
+      ],
+    },
+  ];
+  return await analyzeWithZAI(zaiMessages);
 }
 
 async function analyzeBothImages(userImageBase64, productImageBase64) {
-  console.log('📸👗 Analyzing BOTH images together (glm-4.6v-flash)...');
-  try {
-    const result = await analyzeImageWithVision(
-      [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `You are an AI fashion assistant. Analyze BOTH images together for a virtual try-on:
+  const prompt = `You are an AI fashion assistant. Analyze BOTH images together for a virtual try-on:
 
 IMAGE 1: The person who will wear the outfit.
 IMAGE 2: The clothing product to be tried on.
@@ -248,23 +264,31 @@ Provide:
 2. Product type, color, pattern, and fabric
 3. How well this product suits the person's body type
 4. Suggested styling adjustments (tucking in, rolling sleeves, layering, etc.)
-5. A vivid, detailed description of how the person would look wearing this product — describe it as if you're looking at a photograph
-`,
-            },
-            { type: 'image_url', image_url: { url: userImageBase64 } },
-            { type: 'image_url', image_url: { url: productImageBase64 } },
-          ],
-        },
-      ],
-      1500
-    );
-    return result;
-  } catch (error) {
-    return null;
+5. A vivid, detailed description of how the person would look wearing this product — describe it as if you're looking at a photograph`;
+
+  // Try Gemini
+  try {
+    console.log('📸👗 Analyzing BOTH images (Gemini)...');
+    return await analyzeWithGemini(prompt, [userImageBase64, productImageBase64]);
+  } catch (err) {
+    console.warn('[zaiService] Gemini combined analysis failed, trying ZAI:', err.message);
   }
+
+  // Fallback ZAI
+  const zaiMessages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: userImageBase64 } },
+        { type: 'image_url', image_url: { url: productImageBase64 } },
+      ],
+    },
+  ];
+  return await analyzeWithZAI(zaiMessages);
 }
 
-// ─── Image Generation ─────────────────────────────────────────────────────────
+// ─── Image Generation (Pollinations / BigModel Fallback) ──────────────────────
 
 async function generateTryOnImage(prompt, size = '768x1344') {
   try {
@@ -284,14 +308,12 @@ async function generateImagePollinations(prompt, size = '768x1344') {
   const encodedPrompt = encodeURIComponent(enhancedPrompt);
 
   const models = ['flux', 'turbo'];
-
   for (const model of models) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const seed = Date.now() + attempt;
         const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${model}&nologo=true&seed=${seed}`;
         const response = await fetch(url, { signal: AbortSignal.timeout(45000) });
-
         if (!response.ok) continue;
         const arrayBuffer = await response.arrayBuffer();
         if (arrayBuffer.byteLength < 5000) continue;
@@ -306,6 +328,7 @@ async function generateImagePollinations(prompt, size = '768x1344') {
 
 async function generateImageBigModel(prompt, size = '768x1344') {
   const config = getConfig();
+  if (!config.apiKey) throw new Error('BigModel API key missing.');
   const url = `${config.baseUrl}/images/generations`;
 
   const response = await fetch(url, {
@@ -323,7 +346,6 @@ async function generateImageBigModel(prompt, size = '768x1344') {
     return Buffer.from(await imgResp.arrayBuffer()).toString('base64');
   }
   if (result.id) return await pollBigModelResult(result.id);
-
   throw new Error('BigModel failed');
 }
 
@@ -393,3 +415,4 @@ export async function analyzeBodyType(imageBase64) {
   const description = await analyzeUserPhoto(imageBase64);
   return description || 'Unable to analyze.';
 }
+
