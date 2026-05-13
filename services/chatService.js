@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import ZAI from 'z-ai-web-dev-sdk';
 import fs from 'fs';
 import path from 'path';
@@ -6,19 +5,10 @@ import os from 'os';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-let genAI = null;
 let zaiInstance = null;
 let zaiConfig = null;
 
 // ─── Configuration ────────────────────────────────────────────────────────────
-
-function getGemini() {
-  if (genAI) return genAI;
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  genAI = new GoogleGenerativeAI(apiKey);
-  return genAI;
-}
 
 function getConfig() {
   if (zaiConfig) return zaiConfig;
@@ -46,21 +36,24 @@ function getConfig() {
     } catch (_) {}
   }
 
-  // Fallback default
-  return { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: process.env.ZAI_API_KEY || '' };
+  throw new Error('Configuration not found. Set ZAI_BASE_URL + ZAI_API_KEY env vars, or create .z-ai-config file.');
 }
+
+// ─── ZAI Instance ─────────────────────────────────────────────────────────────
 
 async function getZAI() {
   if (zaiInstance) return zaiInstance;
+
   const config = getConfig();
   const cwdConfig = path.join(process.cwd(), '.z-ai-config');
-  if (!fs.existsSync(cwdConfig) && config.apiKey) {
+  if (!fs.existsSync(cwdConfig)) {
     try {
       fs.writeFileSync(cwdConfig, JSON.stringify(config, null, 2), 'utf-8');
     } catch (err) {
       console.warn('[chatService] Could not write temp config:', err.message);
     }
   }
+
   try {
     zaiInstance = await ZAI.create();
     return zaiInstance;
@@ -70,9 +63,12 @@ async function getZAI() {
   }
 }
 
-async function rawFetchZAI(endpoint, body) {
+// ─── Raw Fetch Helper ─────────────────────────────────────────────────────────
+
+async function rawFetch(endpoint, body) {
   const config = getConfig();
   const url = `${config.baseUrl}${endpoint}`;
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -81,10 +77,12 @@ async function rawFetchZAI(endpoint, body) {
     },
     body: JSON.stringify(body),
   });
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`BigModel API ${response.status}: ${errorText}`);
   }
+
   return response.json();
 }
 
@@ -99,16 +97,16 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 2000) {
       return await fn();
     } catch (error) {
       lastError = error;
-      const isRetryable = error.message && (
-        error.message.includes('429') || 
-        error.message.includes('503') || 
-        error.message.includes('quota') ||
-        error.message.includes('rate')
-      );
+      const isRateLimit =
+        error.message &&
+        (error.message.includes('1305') ||
+          error.message.includes('访问量过大') ||
+          error.message.includes('429') ||
+          error.message.includes('rate'));
 
-      if (isRetryable && attempt < maxRetries) {
+      if (isRateLimit && attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`⏳ Busy. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${maxRetries})`);
+        console.log(`⏳ Rate limited. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${maxRetries})`);
         await sleep(delay);
         continue;
       }
@@ -120,141 +118,123 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 2000) {
 
 // ─── E-Commerce System Prompt ─────────────────────────────────────────────────
 
-const ECOMMERCE_SYSTEM_PROMPT = `You are an expert AI e-commerce gift concierge. Your name is "3Boxes AI Concierge". You help customers with:
+const ECOMMERCE_SYSTEM_PROMPT = `You are an expert AI e-commerce shopping assistant. Your name is "StyleBot". You help customers with:
 
-🛍️ GIFT DISCOVERY
-- Find the perfect gift based on recipient, occasion, or personality
-- Suggest curated gift boxes and hampers
-- Recommend luxury jewellery and lifestyle items
+🛍️ PRODUCT DISCOVERY
+- Find products based on description, style, occasion, or budget
+- Suggest similar or complementary items
+- Compare products and recommend the best option
 
 🔍 SEARCH & FILTER HELP
-- Help users narrow down choices by price, category, material, etc.
-- Explain the craftsmanship and story behind products
-- Sort recommendations by premium quality and occasion fit
+- Help users narrow down choices by price, color, size, brand, rating, etc.
+- Explain product specifications and features
+- Sort recommendations by relevance, price, popularity
 
 📊 PRODUCT ANALYSIS
 - Analyze product details from descriptions or images
-- Highlight why it makes a great gift
-- Suggest personalization and gift-wrapping options
+- Highlight pros and cons
+- Suggest styling tips and outfit combinations
 
-💡 GIFTING ADVICE
-- Recommend gifts for specific occasions (Weddings, Anniversaries, Corporate, Birthdays)
-- Seasonal gifting guides
-- Help with luxury presentation and etiquette
-- Budget-friendly luxury alternatives
+💡 SHOPPING ADVICE
+- Recommend outfits for occasions (weddings, interviews, casual, parties)
+- Seasonal wardrobe suggestions
+- Size and fit guidance
+- Budget-friendly alternatives
 
 📋 FORMATTING RULES
 - Use bullet points for lists
-- Use elegant emojis for visual appeal (💎🎁✨🕯️👔 etc.)
+- Use emojis for visual appeal (👗👔👖👟👜 etc.)
 - Include price ranges when discussing budgets
-- Be specific, professional, and helpful
-- When suggesting products, format as: **Product Name** — Why it's a great gift (Price range)
-- Always ask follow-up questions to understand the recipient better
+- Be specific and actionable
+- When suggesting products, format as: **Product Name** — Brief description (Price range)
+- If you don't know exact prices, give typical ranges
+- Always ask follow-up questions to refine recommendations
 
-Keep responses concise, premium, and helpful. Be friendly, enthusiastic, and sophisticated.`;
+Keep responses concise but helpful. Be friendly, enthusiastic, and fashion-savvy.`;
 
 // ─── Chat Functions ───────────────────────────────────────────────────────────
 
 /**
- * Text-based e-commerce chat.
- * Tries Gemini first, fallbacks to Z AI (Zhipu).
+ * Text-based e-commerce chat (FREE — glm-4-flash)
+ * Handles product search, filtering, recommendations, Q&A
  */
 export async function chatECommerce(messages, productContext = null) {
-  const gemini = getGemini();
-
-  if (gemini) {
-    try {
-      const model = gemini.getGenerativeModel({ 
-        model: 'gemini-1.5-flash',
-        systemInstruction: productContext 
-          ? `${ECOMMERCE_SYSTEM_PROMPT}\n\n📋 CURRENT STORE CONTEXT:\n${productContext}`
-          : ECOMMERCE_SYSTEM_PROMPT,
-      });
-
-      const history = messages.slice(0, -1).map(msg => ({
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.content }],
-      }));
-      const lastMessage = messages[messages.length - 1].content;
-
-      return await retryWithBackoff(async () => {
-        const chat = model.startChat({ history });
-        const result = await chat.sendMessage(lastMessage);
-        return result.response.text();
-      });
-    } catch (err) {
-      console.warn('[chatService] Gemini failed, falling back to ZAI:', err.message);
-    }
-  }
-
-  // Fallback to Z AI
   const systemMessage = {
     role: 'system',
     content: productContext
       ? `${ECOMMERCE_SYSTEM_PROMPT}\n\n📋 CURRENT STORE CONTEXT:\n${productContext}`
       : ECOMMERCE_SYSTEM_PROMPT,
   };
+
   const allMessages = [systemMessage, ...messages];
 
   const zai = await getZAI();
+
+  // Try SDK first
   if (zai) {
     try {
-      return await retryWithBackoff(async () => {
+      const result = await retryWithBackoff(async () => {
         const response = await zai.chat.completions.create({
-          model: 'glm-4-flash',
+          model: 'glm-4-flash', // FREE text model
           messages: allMessages,
           max_tokens: 2048,
           temperature: 0.8,
         });
         return response.choices[0].message.content;
-      });
+      }, 3, 2000);
+      return result;
     } catch (sdkErr) {
-      console.warn('[chatService] ZAI SDK failed, trying raw fetch:', sdkErr.message);
+      console.warn('[chatService] SDK chat failed, trying raw fetch:', sdkErr.message);
     }
   }
 
-  return await retryWithBackoff(async () => {
-    const result = await rawFetchZAI('/chat/completions', {
+  // Fallback: raw fetch
+  return retryWithBackoff(async () => {
+    const result = await rawFetch('/chat/completions', {
       model: 'glm-4-flash',
       messages: allMessages,
       max_tokens: 2048,
       temperature: 0.8,
     });
     return result.choices?.[0]?.message?.content || '';
-  });
+  }, 3, 2000);
 }
 
 /**
- * Analyze product image.
- * Tries Gemini Vision first, fallbacks to Z AI Vision.
+ * Analyze a product image with e-commerce context (FREE — glm-4.6v-flash)
+ * Identifies product type, style, price estimate, similar items
  */
 export async function analyzeProductChat(imageBase64, userQuestion = null) {
-  const gemini = getGemini();
-
   const prompt = userQuestion
     ? `Analyze this product image and answer the user's question.
+
 User's question: ${userQuestion}
-Provide a detailed analysis including identification, features, price range, and style.`
+
+Provide a detailed analysis including:
+1. Product identification (type, brand if visible, category)
+2. Key features and specifications
+3. Estimated price range
+4. Style and occasion suitability
+5. Similar product suggestions
+6. Pros and cons
+7. Size/fit recommendations
+
+Be specific and helpful for shopping decisions.`
     : `Analyze this product image for an e-commerce shopping assistant:
-Identify product, features, color/material, price range, and target audience.`;
 
-  if (gemini) {
-    try {
-      const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-      const imagePart = { inlineData: { data: base64Data, mimeType: 'image/png' } };
+1. What is this product? (type, category, subcategory)
+2. Key features and design details
+3. Color, material, and texture
+4. Estimated price range (budget/mid-range/premium)
+5. Target audience and occasion
+6. Style category (casual, formal, sportswear, etc.)
+7. Similar or complementary products to suggest
+8. Pros and cons of this product
 
-      return await retryWithBackoff(async () => {
-        const result = await model.generateContent([ECOMMERCE_SYSTEM_PROMPT, prompt, imagePart]);
-        return result.response.text();
-      });
-    } catch (err) {
-      console.warn('[chatService] Gemini Vision failed, falling back to ZAI:', err.message);
-    }
-  }
+Be detailed and specific for shopping recommendations.`;
 
-  // Fallback to Z AI Vision
   const zai = await getZAI();
+
   const visionMessages = [
     {
       role: 'user',
@@ -265,36 +245,39 @@ Identify product, features, color/material, price range, and target audience.`;
     },
   ];
 
+  // Try SDK first
   if (zai) {
     try {
-      return await retryWithBackoff(async () => {
+      const result = await retryWithBackoff(async () => {
         const response = await zai.chat.completions.create({
-          model: 'glm-4.6v-flash',
+          model: 'glm-4.6v-flash', // FREE vision model
           messages: visionMessages,
           max_tokens: 1500,
           temperature: 0.7,
         });
         return response.choices[0].message.content;
-      });
+      }, 3, 3000);
+      return result;
     } catch (sdkErr) {
-      console.warn('[chatService] ZAI SDK Vision failed, trying raw fetch:', sdkErr.message);
+      console.warn('[chatService] SDK vision failed, trying raw fetch:', sdkErr.message);
     }
   }
 
-  return await retryWithBackoff(async () => {
-    const result = await rawFetchZAI('/chat/completions', {
+  // Fallback: raw fetch
+  return retryWithBackoff(async () => {
+    const result = await rawFetch('/chat/completions', {
       model: 'glm-4.6v-flash',
       messages: visionMessages,
       max_tokens: 1500,
       temperature: 0.7,
     });
     return result.choices?.[0]?.message?.content || '';
-  });
+  }, 3, 3000);
 }
 
-
 /**
- * Search/filter products
+ * Search/filter products by text description (FREE — glm-4-flash)
+ * Returns structured product suggestions
  */
 export async function searchProducts(query, filters = {}) {
   const filterText = Object.entries(filters)
@@ -302,22 +285,46 @@ export async function searchProducts(query, filters = {}) {
     .map(([k, v]) => `${k}: ${v}`)
     .join(', ');
 
-  const prompt = `I'm looking for: ${query}
-${filterText ? `My preferences: ${filterText}` : ''}
-Please suggest products with name, description, price range, and why they match.`;
+  const searchMessages = [
+    {
+      role: 'user',
+      content: `I'm looking for: ${query}
 
-  return await chatECommerce([{ role: 'user', content: prompt }]);
+${filterText ? `My preferences: ${filterText}` : ''}
+
+Please suggest products with:
+- Product name and brief description
+- Typical price range
+- Why it matches my search
+- Where to find similar items (general shopping platforms)
+- Alternative options at different price points
+
+Format as a clear, organized list.`,
+    },
+  ];
+
+  return await chatECommerce(searchMessages);
 }
 
 /**
- * Get outfit recommendations
+ * Get outfit recommendations based on occasion (FREE — glm-4-flash)
  */
 export async function getOutfitRecommendation(occasion, budget = null, style = null) {
-  const prompt = `Suggest a complete outfit for: ${occasion}
+  const messages = [
+    {
+      role: 'user',
+      content: `Suggest a complete outfit for: ${occasion}
 ${budget ? `Budget: ${budget}` : ''}
 ${style ? `Style preference: ${style}` : ''}
-Include breakdown, price ranges, and styling tips.`;
 
-  return await chatECommerce([{ role: 'user', content: prompt }]);
+Include:
+1. Complete outfit breakdown (top, bottom, shoes, accessories)
+2. Specific product suggestions with price ranges
+3. Color coordination tips
+4. Alternative options for different budgets
+5. Where to shop for each item`,
+    },
+  ];
+
+  return await chatECommerce(messages);
 }
-
